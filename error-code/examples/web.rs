@@ -1,0 +1,63 @@
+use axum::{response::IntoResponse, routing::get, Router};
+use backtrace::Backtrace;
+use error_code::ToErrorInfo;
+use http::{Response, StatusCode};
+use thiserror::Error;
+use tokio::net::TcpListener;
+use tracing::{info, warn};
+
+#[allow(dead_code)]
+#[derive(Debug, Error, ToErrorInfo)]
+#[error_info(app_type = "StatusCode", prefix = "0A")]
+enum AppError {
+    #[error("Invalid parameter: {0}")]
+    #[error_info(code = "IP", app_code = "400")]
+    InvalidParam(String),
+    #[error("Item {0} not found")]
+    #[error_info(code = "NF", app_code = "404")]
+    NotFound(String),
+
+    #[error("Internal server error: {0}")]
+    #[error_info(
+        code = "ISE",
+        app_code = "500",
+        client_msg = "we had a server problem, please try again later"
+    )]
+    ServerError(String),
+
+    #[error("Unknown error")]
+    #[error_info(code = "UE", app_code = "500")]
+    Unknown,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let app = Router::new().route("/", get(index_handler));
+    let addr = "0.0.0.0:18081";
+    info!("listening on http://{}", addr);
+
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app.into_make_service()).await?;
+    Ok(())
+}
+async fn index_handler() -> Result<&'static str, AppError> {
+    let bt = Backtrace::new();
+    // info!("{:?}", bt);
+
+    Err(AppError::ServerError(format!("{bt:?}")))
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> axum::response::Response {
+        let einfo = self.to_error_info();
+        let status = einfo.app_code;
+        if status.is_server_error() {
+            warn!("{:?}", einfo);
+        } else {
+            info!("{:?}", einfo);
+        }
+        Response::builder().status(status).body(einfo.to_string().into()).unwrap()
+    }
+}
